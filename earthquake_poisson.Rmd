@@ -1,0 +1,262 @@
+---
+title: "Hierarchical Poisson Models for Earthquake Inference"
+author: "Ryuta Yoshimatsu"
+geometry: margin = 2cm
+output:
+  bookdown::pdf_document2:
+    toc: no
+    toc_depth: '3'
+  bookdown::html_document2:
+    number_sections: yes
+    toc: no
+    toc_depth: 3
+    df_print: paged
+  html_document:
+    toc: no
+    toc_depth: '3'
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages, message=FALSE, warning=FALSE}
+library(stats)
+library(dplyr)
+library(ggplot2)
+library(devtools)
+library(gridExtra)
+library(grid)
+library(tidyverse)
+library(knitr)
+library(lubridate)
+library(reshape2)
+library(vcd)
+library(maps)
+library(resample)
+library(rjags)
+library(kableExtra)
+```
+
+# Executive Summary
+We use historical data of earthquakes and estimate probabilities of large earthquakes occurring in eight different countries in year 2022. The Bayesian framework for inference is used and Poisson processes are assumed for temporal occurrences of earthquakes. Posterior distributions for the expected mean of rate for the different countries are obtained, however, shortcomings of the current approach are also identified. These include: 1. the data do not strictly follow Poisson process and 2. there is a presence of possible correlation between the observations.
+
+# Introduction
+In some parts of the world, earthquakes pose great natural threats to humans which cause immense damage and affect many people's lives. Despite its relevance, predicting occurrences of major earthquakes remains a big challenge. In this report, we present an attempt to estimate the probability of large earthquakes occurring in a given country within the year 2022 using the Bayesian framework of inference.
+
+# Data
+Our goal is to make statistical inference for the probabilities of earthquake occurring in the future. To this end, we use the historical data of earthquakes, which we collect from a worldwide earthquake catalog from the United States Geological Survey database (https://earthquake.usgs.gov/earthquakes/search/). We analyze the earthquakes that occurred after 1970 with the magnitude greater than 7.0. We restricted our data set to these conditions because the records prior to 1970 and below the magnitude 6.0 could be prone to errors and incompleteness (see the website for details).
+
+```{r, message=FALSE, warning=FALSE}
+earthquakes <- read.csv('earthquakes_processed.csv', header = TRUE)
+earthquakes$time <- as.Date(substr(earthquakes$time,1,10), format('%Y-%m-%d'))
+earthquakes$year <- year(earthquakes$time)
+print(head(earthquakes), row.names=FALSE)
+print(tail(earthquakes), row.names=FALSE)
+```
+
+The earthquakes in the data set are visualized on the world map below (Figure \@ref(fig:map)). Note that earthquakes that occurred far out into the sea are omitted from the data set.
+
+```{r map, fig.width=10, fig.height=7.5, fig.align="center", warning=FALSE, message=FALSE, fig.cap = "World map with major earthquakes since 1970."}
+world_map <- map_data("world")
+p <- ggplot() + coord_fixed() + xlab("") + ylab("")
+base_world_messy <- p + geom_polygon(data=world_map, aes(x=long, y=lat, group=group), colour="light green", fill="light green")
+cleanup <- theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+        panel.background = element_rect(fill = 'white', colour = 'white'), 
+        axis.line = element_line(colour = "white"), legend.position="none",
+        axis.ticks=element_blank(), axis.text.x=element_blank(),
+        axis.text.y=element_blank())
+base_world <- base_world_messy + cleanup
+map_data <- base_world + geom_point(data=earthquakes, aes(x=longitude, y=latitude, size=mag), colour="Deep Pink", fill="Pink", pch=21, alpha=I(0.7)) 
+print(map_data)
+```
+
+```{r}
+agg <- earthquakes %>% 
+  group_by(year, country) %>% 
+  summarise(count=n(), .groups = 'drop') %>% 
+  pivot_wider(names_from = country, values_from = count, values_fill = 0)
+names(agg) <- make.names(names(agg), unique=TRUE)
+```
+
+We limit the number of countries for the analysis to eight. The choice of this number is completely arbitrary and this is solely for brevity's sake. We take the top countries with the largest number of earthquakes into our analysis. The sample data shown below holds the number of earthquakes by year per country (see Table \@ref(tab:dataset)). The same data are shown in a time series format in Figure \@ref(fig:timeseries).
+
+```{r dataset, fig.width=5, fig.height=2.5, message=FALSE, warning=FALSE}
+# Select countries with total earthquakes >= 30 (this filter is arbitrary)
+cols <- which(colSums(agg) >= 30)
+agg <- agg %>% select(cols)
+kable(tail(agg,3), caption="The earthquake dataset.") %>% kable_styling(html_font=8)
+```
+
+```{r, message=FALSE, warning=FALSE}
+print(summary(agg[,-1]))
+```
+
+```{r timeseries, fig.cap='Time series of earthquake occurances.', fig.width=15, fig.height=5, fig.align="center", warning=FALSE, message=FALSE}
+agg_melt <- melt(agg, id.vars = 'year', variable.name = 'country')
+print(ggplot(agg_melt, aes(year, value)) + geom_line(aes(colour = country)))
+```
+
+We plot the auto-correlations of the time series (see Figure \@ref(fig:acf)) to evaluate the that the independence of the earthquakes. We acknowledge the level of auto-correlation in the plot for Guinean and other countries. These are interesting observations and deserve further investigations, but it is for now out of scope for this assignment and, therefore, we proceed with our analysis.
+
+```{r acf, fig.cap='Autocorrelation of the timeseries.', fig.width=15, fig.height=5, fig.align="center", warning=FALSE, message=FALSE}
+p <- c()
+i <- 1
+for(column in colnames(agg))
+{
+  if (column != "year")
+  {
+    bacf <- acf(agg[[column]], plot=FALSE)
+    bacfdf <- with(bacf, data.frame(lag, acf))
+    p[[i]] <- ggplot(data=bacfdf, mapping=aes(x=lag, y=acf)) + 
+      geom_segment(mapping=aes(xend=lag, yend=0)) + 
+      geom_hline(aes(yintercept = 0.2), linetype = 3, color = 'darkblue') + 
+      geom_hline(aes(yintercept = -0.2), linetype = 3, color = 'darkblue') +
+      ggtitle(column) +
+      theme(plot.title = element_text(hjust = 0.5))
+    i = i + 1
+  }
+}
+
+grid.arrange(
+  p[[1]], p[[2]], p[[3]], p[[4]], p[[5]], p[[6]], p[[7]], p[[8]],
+  nrow=2,
+  bottom = textGrob(
+    "",
+    gp = gpar(fontface=3, fontsize=9),
+    hjust=1,
+    x=1
+  )
+)
+```
+
+We plot the distribution of the earthquakes by country in Figure \@ref(fig:hist). All are positively skewed with median lying on either 0 or 1 and mean taking value between 0.60 and 1.07.
+
+```{r hist, fig.cap='Histogram: number of earthquakes in a year', fig.width=15, fig.height=5, fig.align="center", warning=FALSE, message=FALSE}
+h <- c()
+i <- 1
+for(column in colnames(agg))
+{
+  if (column != "year")
+  {
+    h[[i]] <- ggplot(agg, aes_string(column)) + geom_histogram(binwidth=1, fill='blue', alpha=0.5)
+    i = i + 1
+  }
+}
+
+grid.arrange(
+  h[[1]], h[[2]], h[[3]], h[[4]], h[[5]], h[[6]], h[[7]], h[[8]],
+  nrow=2,
+  bottom = textGrob(
+    "",
+    gp = gpar(fontface=3, fontsize=9),
+    hjust=1,
+    x=1
+  )
+)
+```
+
+Finally, we run a goodness of fit test for each distribution using the Chi-squared statistics to check whether the data are not obviously inconsistent with the underlying distribution being Poisson (see Table \@ref(tab:p)). If the p value of the test is larger than 0.05, we can support the null hypothesis which states that the process is a Poisson process. Again, we acknowledge that for some countries, we fail to support the null hypothesis. There are other distributions that are known to fit the earthquakes temporal distribution better [Min-Hao Wua: Earthquake, Poisson and Weibull distributions], however, we carry on with the inference task assuming a Poisson process for each distribution.
+
+```{r p, warning=FALSE, message=FALSE}
+pvalues <- c()
+i=1
+for(column in colnames(agg))
+{
+  if (column != "year")
+  {
+    gf = goodfit(agg[[column]], type="poisson", method="ML")
+    gf.summary = capture.output(summary(gf))[[5]]
+    pvalue = unlist(strsplit(gf.summary, split = " "))
+    pvalue = as.numeric(pvalue[length(pvalue)])
+    pvalues[[i]] <- c(column, pvalue)
+    i = i + 1
+  }
+}
+pvalues <- as.data.frame(do.call(rbind, pvalues))
+colnames(pvalues) <- c("country", "p-value")
+kable(pvalues, caption='pvalues of Chi-square tests') %>% kable_styling(html_font=8)
+```
+
+
+# Model
+
+We assume that the temporal occurrence of earthquakes with magnitude greater than 7.0 is a Poisson process: i.e. independent, stationary and do not occur simultaneously. Therefore, we employ Poisson likelihood with a hierarchical structure, where the hierarchical grouping is done by country. Each country sits on a different junction tectonic plates and hence the earthquakes occurring in the same country should share the same distribution parameter (lambda), but across different countries, it is natural to assume that these lambdas are different. We specify Gamma prior on the intra-country lambdas ($\lambda$[1],...,$\lambda$[8]), whose mean ($\mu$) comes from yet another Gamma distribution with the mean at the empirical mean of the observation and standard deviation from an exponential distribution. Note that $\mu$ is our prior on the inter-country mean of the rate as well. 
+
+```{r, results='hide'}
+stats <- merge(x=as.data.frame(colMeans(agg)), y=as.data.frame(colVars(agg)), by=0) %>% filter(Row.names != 'year')
+colnames(stats) <- c("country","mean", "variance")
+print(paste0("Inter-country empirical mean: ", mean(stats$mean)))
+print(paste0("Inter-country empirical variance: ", var(stats$mean)))
+```
+
+We fit the model using JAGS and R and generate three chains of simulation, but throw away the first 1000 steps as burn-in. We then produce 5000 more steps for each chain.
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+mod_string = " model {
+    for (i in 1:length(value)) {
+      value[i] ~ dpois(lam[country[i]])
+    }
+    for (j in 1:max(country)) {
+      lam[j] ~ dgamma(alpha, beta)
+    }
+    
+    alpha = mu^2/sig^2
+    beta = mu/sig^2
+    
+    mu ~ dgamma(1.0, 1.0) # Expected mean 1.0 -> emperical mean
+    sig ~ dexp(1.0) # Standard deviation on the expencted mean 1.0 -> emperical variance
+    
+} "
+
+data_jags = list(value=agg_melt$value, country=agg_melt$country)
+params = c("lam", "mu", "sig")
+mod = jags.model(textConnection(mod_string), data=data_jags, n.chains=3)
+update(mod, 1e3)
+mod_sim = coda.samples(model=mod, variable.names=params, n.iter=5e3)
+mod_csim = as.mcmc(do.call(rbind, mod_sim))
+```
+
+The trace plots of the parameters and Gelman-Rubin diagnostics indicate the convergence of the simulations (i.e. potential scale reduction factors all close to 1), and the effective sample size of all parameters are on the order of thousands, which guarantees us a reliable estimation of credible intervals.
+
+```{r, fig.width=15, fig.height=10, warning=FALSE, message=FALSE}
+# convergence diagnostics
+plot(mod_sim)
+gelman.diag(mod_sim)
+autocorr.diag(mod_csim)
+autocorr.plot(mod_csim)
+effectiveSize(mod_csim)
+```
+
+We check the fit via residuals. With a hierarchical model, there are two levels of residuals: the observation level and the country mean level. To simplify, we look at the residuals associated with the posterior means of the parameters. 
+
+The observation residuals, based on the estimates of country means, seems to be right skewed indicating that the model struggles to fit to years when an unexpectedly large number of earthquakes occurred. For example, in 2011 in Japan, there were in total 6 earthquakes with magnitude greater 7. These earthquakes were thought to had been correlated (i.e. triggered by the first earthquake with magnitude 9 in the Tohoku area). Our model obviously fails to capture this accurately since the independence of events are assumed. The country mean level residual on the other hand look fine. Note that we omitted the plots for the limitation of pages but these were produced in the source code written in R. 
+
+```{r, fig.width=5, fig.height=5, fig.align="center", warning=FALSE, message=FALSE}
+pm_params = colMeans(mod_csim)
+yhat = rep(pm_params[1:8], each=52)
+
+# Observation level residuals
+resid = agg_melt$value - yhat
+plot(resid)
+plot(jitter(yhat), resid)
+
+# Country level residuals
+lam_resid = pm_params[1:8] - pm_params["mu"]
+print(lam_resid)
+plot(lam_resid)
+abline(h=0, lty=2)
+```
+
+# Results
+
+We present the posterior summary in Table \@ref(tab:posterior). The means of the parameter lambda in Poisson posterior distribution is the expected rate of occurrence. For example, $\lambda$[1] is the expected mean rate for Japan and the model states that with probability 0.5981315 [```1-ppois(0,0.9116303))```], there will be at least one earthquake with a magnitude greater than 7.0 occurring in Japan in 2022. The same statement could be made for other countries by using the posterior distribution of their lambdas. We acknowledge that for some countries, the data are not statistically consistent with the Poisson process assumption and also from inspecting the residual plot of the fit, it is clear that the models are not always accurate.
+
+```{r posterior}
+kable(as.data.frame((summary(mod_sim)$statistics)), caption='Posterior distribution of the parameters.') %>% kable_styling(html_font=8)
+```
+
+# Conclusions
+
+In this report, we estimated the probability of large earthquakes occurring in a given country within the year 2022. We have assumed Poisson processes for earthquake temporal occurrence distributions and applied hierarchical models based on countries. We have obtained the posterior distributions for the expected mean of the rate for eight different countries. However, along the process, we have identified some shortcomings of the approach (i.e. the data not strictly following Poisson process, possible correlation between the observations).

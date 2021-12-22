@@ -1,0 +1,784 @@
+---
+title: "bayesian_jags_practice"
+author: "Ryuta Yoshimatsu"
+date: "12/18/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r packages, message = FALSE}
+library(knitr)
+library(rjags)
+```
+
+
+# Plot distribution
+
+```{r, fig.width=5, fig.height=5, warning=FALSE, message=FALSE}
+x=seq(from = 0,to = 10, by = .1)
+plot(x, dnorm(x,5,5), type="l")
+```
+
+# Examples
+Bayesian linear regression with normal likelihood and inverse gamma prior for the observation variance.
+Normal prior for the weights and intercept.
+
+```{r, fig.width=5, fig.height=5, warning=FALSE, message=FALSE}
+library(car)
+data("Anscombe")
+
+mod_string = " model {
+    for (i in 1:length(education)) {
+        education[i] ~ dnorm(mu[i], prec)
+        mu[i] = b0 + b[1]*income[i] + b[2]*young[i] + b[3]*urban[i]
+    }
+
+    b0 ~ dnorm(0.0, 1.0/1.0e6)
+    for (i in 1:3) {
+        b[i] ~ dnorm(0.0, 1.0/1.0e6)
+    }
+    prec ~ dgamma(1.0/2.0, 1.0*1500.0/2.0)
+    sig2 = 1.0 / prec
+    sig = sqrt(sig2)
+} "
+
+data_jags = as.list(Anscombe)
+params = c("b0", "b", "sig")
+inits = function(){inits = list("b0"=rnorm(1,0.0,100.0), "b"=rnorm(3,0.0,100.0), "prec"=rgamma(1,1.0,1.0))}
+mod = jags.model(textConnection(mod_string), data=data_jags, inits=inits, n.chains=3)
+update(mod, 1000)
+mod_sim = coda.samples(model=mod, variable.names=params, n.iter=5000)
+plot(mod_sim)
+mod_csim = do.call(rbind, mod_sim)
+
+# Model checking
+(pm_params = colMeans(mod_csim))
+X = cbind(Anscombe$income, Anscombe$young, Anscombe$urban, rep(1.0, length(Anscombe$education)))
+yhat = drop(X %*% pm_params[1:4])
+resid = data_jags$education - yhat
+plot(resid)
+
+dic.samples(mod, n.iter=1e6)
+```
+
+Bayesian linear regression with normal likelihood and inverse gamma prior for the observation variance. 
+Normal prior for the weights (including the interaction) and intercept.
+
+```{r, fig.width=5, fig.height=5, warning=FALSE, message=FALSE}
+library(car)
+data("Anscombe")
+
+mod_string = " model {
+    for (i in 1:length(education)) {
+        education[i] ~ dnorm(mu[i], prec)
+        mu[i] = b0 + b[1]*income[i] + b[2]*young[i] + b[3]*income[i]*young[i]
+    }
+
+    b0 ~ dnorm(0.0, 1.0/1.0e6)
+    for (i in 1:3) {
+        b[i] ~ dnorm(0.0, 1.0/1.0e6)
+    }
+    prec ~ dgamma(1.0/2.0, 1.0*1500.0/2.0)
+    sig2 = 1.0 / prec
+    sig = sqrt(sig2)
+} "
+
+data_jags = as.list(Anscombe)
+params = c("b0", "b", "sig")
+inits = function() {inits = list("b0"=rnorm(1,0.0,100.0), "b"=rnorm(3,0.0,100.0), "prec"=rgamma(1,1.0,1.0))}
+mod = jags.model(textConnection(mod_string), data=data_jags, inits=inits, n.chains=3)
+update(mod, 1000)
+mod_sim = coda.samples(model=mod, variable.names=params, n.iter=5000)
+mod_csim = do.call(rbind, mod_sim)
+
+# Model checking
+(pm_params = colMeans(mod_csim))
+X = cbind(Anscombe$income, Anscombe$young, Anscombe$income*Anscombe$young, rep(1.0, length(Anscombe$education)))
+yhat = drop(X %*% pm_params[1:4])
+resid = data_jags$education - yhat
+plot(resid)
+
+summary(mod_sim)
+dic.samples(mod, n.iter=1e6)
+```
+
+
+Bayesian linear regression with normal likelihood and inverse gamma prior for the observation variance.
+Exponential priors for the weights.
+  
+```{r, fig.width=5, fig.height=5, warning=FALSE, message=FALSE}
+library(car)
+data("Anscombe")
+Xc = scale(Anscombe, center=TRUE, scale=TRUE)
+
+mod_string = " model {
+    for (i in 1:length(education)) {
+        education[i] ~ dnorm(mu[i], prec)
+        mu[i] = b[1]*income[i] + b[2]*young[i] + b[3]*urban[i]
+    }
+
+    for (i in 1:3) {
+        b[i] ~ ddexp(0.0, sqrt(1.0)) # has variance 2.0
+    }
+
+    prec ~ dgamma(1.0/2.0, 1.0*1.0/2.0)
+    sig2 = 1.0 / prec
+    sig = sqrt(sig2)
+} "
+
+data_jags = as.list(data.frame(Xc))
+params = c("b", "sig")
+mod = jags.model(textConnection(mod_string), data=data_jags, n.chains=3)
+update(mod, 1000)
+mod_sim = coda.samples(model=mod, variable.names=params, n.iter=5000)
+mod_csim = as.mcmc(do.call(rbind, mod_sim))
+summary(mod_sim)
+plot(mod_csim)
+mod_csim = do.call(rbind, mod_sim)
+
+# Model checking
+(pm_params = colMeans(mod_csim))
+X = cbind(Anscombe$income, Anscombe$young, Anscombe$urban, rep(1.0, length(Anscombe$education)))
+yhat = drop(X %*% pm_params[1:4])
+resid = data_jags$education - yhat
+plot(resid)
+
+dic.samples(mod, n.iter=1e6)
+```
+
+
+Bayesian linear regression with normal likelihood and inverse gamma prior for the observation variance.
+Exponential priors for the weights.
+  
+```{r, fig.width=5, fig.height=5, warning=FALSE, message=FALSE}
+library("car")
+data("Leinhardt")
+Leinhardt$loginfant = log(Leinhardt$infant)
+Leinhardt$logincome = log(Leinhardt$income)
+dat = na.omit(Leinhardt)
+
+mod_string = " model {
+    for (i in 1:n) {
+        y[i] ~ dnorm(mu[i], prec)
+        mu[i] = b[1] + b[2]*log_income[i] 
+    }
+    
+    for (i in 1:2) {
+        b[i] ~ dnorm(0.0, 1.0/1.0e6)
+    }
+    
+    prec ~ dgamma(5/2.0, 5*10.0/2.0)
+    sig2 = 1.0 / prec
+    sig = sqrt(sig2)
+} "
+
+data_jags = list(y=dat$loginfant, n=nrow(dat), log_income=dat$logincome)
+params = c("b", "sig")
+inits = function() {inits = list("b"=rnorm(2,0.0,100.0), "prec"=rgamma(1,1.0,1.0))}
+mod = jags.model(textConnection(mod_string), data=data_jags, inits=inits, n.chains=3)
+update(mod, 1000) # burn-in
+mod_sim = coda.samples(model=mod,variable.names=params,n.iter=5000)
+mod_csim = do.call(rbind, mod_sim) # combine multiple chains
+plot(mod_sim)
+gelman.diag(mod_sim)
+autocorr.diag(mod_sim)
+autocorr.plot(mod_sim)
+effectiveSize(mod_sim)
+
+# Model checking
+X = cbind(rep(1.0, data_jags$n), data_jags$log_income)
+head(X)
+(pm_params = colMeans(mod_csim)) # posterior mean
+yhat = drop(X %*% pm_params[1:2])
+resid = data_jags$y - yhat
+plot(resid) # against data index
+plot(yhat, resid) # against predicted values
+qqnorm(resid) # checking normality of residuals
+rownames(dat)[order(resid, decreasing=TRUE)[1:5]] # which countries have the largest positive residuals?
+
+summary(mod_sim)
+```
+
+
+Bayesian linear regression with t likelihood, exponential prior for the degrees of freedom (df) and inverse gamma prior for the scale (tau).
+Normal priors for the weights and intercept.
+
+```{r, fig.width=5, fig.height=5, warning=FALSE, message=FALSE}
+library(car)
+data("Leinhardt")
+Leinhardt$loginfant = log(Leinhardt$infant)
+Leinhardt$logincome = log(Leinhardt$income)
+dat = na.omit(Leinhardt)
+
+mod_string = " model {
+    for (i in 1:length(y)) {
+        y[i] ~ dt(mu[i], tau, df)
+        mu[i] = b[1] + b[2]*log_income[i] + b[3]*is_oil[i]
+    }
+
+    for (i in 1:3) {
+        b[i] ~ dnorm(0.0, 1.0/1.0e6)
+    }
+
+    df = nu + 2.0 # we want degrees of freedom > 2 to guarantee existence of mean and variance
+    nu ~ dexp(1.0)
+
+    tau ~ dgamma(5/2.0, 5*10.0/2.0) # tau is close to, but not equal to the precision
+    sig = sqrt( 1.0 / tau * df / (df - 2.0) ) # standard deviation of errors
+} "
+
+data_jags = list(y=dat$loginfant, log_income=dat$logincome, is_oil=as.numeric(dat$oil=="yes"))
+params = c("b", "sig", "df")
+mod = jags.model(textConnection(mod_string), data=data_jags, n.chains=3)
+update(mod, 1000)
+mod_sim = coda.samples(model=mod, variable.names=params, n.iter=5000)
+mod_csim = do.call(rbind, mod_sim)
+
+# Model checking
+X = cbind(rep(1.0, length(data_jags$log_income)), data_jags$log_income, data_jags$is_oil)
+head(X)
+(pm_params = colMeans(mod_csim)) # posterior mean
+yhat = drop(X %*% pm_params[1:3])
+resid = data_jags$y - yhat
+plot(resid) # against data index
+plot(yhat, resid) # against predicted values
+qqnorm(resid) # checking normality of residuals
+rownames(dat)[order(resid, decreasing=TRUE)[1:5]] # which countries have the largest positive residuals?
+
+summary(mod_sim)
+dic.samples(mod, n.iter=1e6)
+```
+
+
+Bayesian ANOVA (one factor) with normal likelihood, normal prior for the intra-group means and inverse gamma prior for the intra-group variances.
+
+```{r, fig.width=5, fig.height=5, warning=FALSE, message=FALSE}
+data("PlantGrowth")
+
+mod_string = " model {
+    for (i in 1:length(y)) {
+        y[i] ~ dnorm(mu[grp[i]], prec[grp[i]])
+    }
+    for (j in 1:3) {
+        mu[j] ~ dnorm(0.0, 1.0/1.0e6)
+        prec[j] ~ dgamma(5/2.0, 5*1.0/2.0)
+        sig[j] = sqrt(1.0/prec[j])
+    }
+} "
+
+data_jags = list(y=PlantGrowth$weight, grp=as.numeric(PlantGrowth$group))
+params = c("mu", "sig")
+inits = function() {inits = list("mu"=rnorm(3,0.0,100.0), "prec"=rgamma(3,1.0,1.0))}
+mod = jags.model(textConnection(mod_string), data=data_jags, inits=inits, n.chains=3)
+update(mod, 1e3)
+mod_sim = coda.samples(model=mod, variable.names=params, n.iter=5e3)
+mod_csim = as.mcmc(do.call(rbind, mod_sim)) # combined chains
+
+plot(mod_sim)
+gelman.diag(mod_sim)
+autocorr.diag(mod_sim)
+effectiveSize(mod_sim)
+
+(pm_params = colMeans(mod_csim))
+yhat = pm_params[1:3][data_jags$grp]
+resid = data_jags$y - yhat
+plot(resid)
+plot(yhat, resid)
+
+summary(mod_sim)
+HPDinterval(mod_csim)
+mean(mod_csim[,3] > mod_csim[,1])
+mean(mod_csim[,3] > 1.1*mod_csim[,1])
+```
+
+
+Bayesian (two factor) cell means ANOVA with normal likelihood, normal prior for the intra-group means and inverse gamma priors for the intra-group variances.
+
+```{r, fig.width=5, fig.height=5, warning=FALSE, message=FALSE}
+data("warpbreaks")
+mod_string = " model {
+    for( i in 1:length(y)) {
+        y[i] ~ dnorm(mu[woolGrp[i], tensGrp[i]], prec[woolGrp[i], tensGrp[i]])
+    }
+    for (j in 1:max(woolGrp)) {
+        for (k in 1:max(tensGrp)) {
+            mu[j,k] ~ dnorm(0.0, 1.0/1.0e6)
+            prec[j,k] ~ dgamma(1.0/2.0, 1.0/2.0)
+            sig[j,k] = sqrt(1.0 / prec[j,k])
+        }
+    }
+} "
+data_jags = list(y=log(warpbreaks$breaks), woolGrp=as.numeric(warpbreaks$wool), tensGrp=as.numeric(warpbreaks$tension))
+params = c("mu", "sig")
+mod = jags.model(textConnection(mod_string), data=data_jags, n.chains=3)
+update(mod, 1e3)
+mod_sim = coda.samples(model=mod, variable.names=params, n.iter=5e3)
+mod_csim = as.mcmc(do.call(rbind, mod_sim))
+(dic = dic.samples(mod, n.iter=1e3))
+
+HPDinterval(mod_csim)
+par(mfrow=c(3,2)) # arrange frame for plots
+densplot(mod_csim[,1:6], xlim=c(2.0, 4.5))
+prop.table( table( apply(mod3_csim[,1:6], 1, which.min) ) )
+```
+
+
+Bayesian logistic regression with Bernoulli likelihood.
+Normal prior for the intercept and exponential priors for the weights.
+
+```{r, fig.width=5, fig.height=5, warning=FALSE, message=FALSE}
+library("boot")
+data("urine")
+dat = na.omit(urine)
+X = scale(dat[,-1], center=TRUE, scale=TRUE)
+
+mod_string = " model {
+    for (i in 1:length(y)) {
+        y[i] ~ dbern(p[i])
+        logit(p[i]) = int + b[1]*gravity[i] + b[2]*ph[i] + b[3]*osmo[i] + b[4]*cond[i] + b[5]*urea[i] + b[6]*calc[i]
+    }
+    
+    int ~ dnorm(0.0, 1.0/25.0)
+    for (j in 1:6) {
+        b[j] ~ ddexp(0.0, sqrt(2.0)) # has variance 1.0
+    }
+} "
+
+data_jags = list(y=dat$r, gravity=X[,"gravity"], ph=X[,"ph"], osmo=X[,"osmo"], cond=X[,"cond"], urea=X[,"urea"], calc=X[,"calc"])
+params = c("int", "b")
+mod = jags.model(textConnection(mod_string), data=data_jags, n.chains=3)
+update(mod, 1e3)
+mod_sim = coda.samples(model=mod, variable.names=params, n.iter=5e3)
+mod_csim = as.mcmc(do.call(rbind, mod_sim))
+
+# convergence diagnostics
+plot(mod_sim, ask=TRUE)
+gelman.diag(mod_sim)
+autocorr.diag(mod_sim)
+autocorr.plot(mod_sim)
+effectiveSize(mod_sim)
+
+## calculate DIC
+dic = dic.samples(mod, n.iter=1e3)
+summary(mod_sim)
+
+# Making checking (in sample prediction)
+(pm_coef = colMeans(mod_csim))
+pm_Xb = pm_coef["int"] + X[,c(1,2,3,4,5,6)] %*% pm_coef[1:6]
+phat = 1.0 / (1.0 + exp(-pm_Xb))
+head(phat)
+plot(phat, jitter(dat$r))
+(tab0.5 = table(phat > 0.5, data_jags$y))
+sum(diag(tab0.5)) / sum(tab0.5)
+(tab0.3 = table(phat > 0.3, data_jags$y))
+sum(diag(tab0.3)) / sum(tab0.3)
+```
+
+
+Bayesian logistic regression with binomial likelihood.
+Normal prior for the intercept and the weights.
+
+```{r, fig.width=5, fig.height=5, warning=FALSE, message=FALSE}
+library("MASS")
+data("OME")
+any(is.na(OME)) # check for missing values
+dat = subset(OME, OME != "N/A")
+dat$OME = factor(dat$OME) # relabel OME
+mod_glm = glm(Correct/Trials ~ Age + OME + Loud + Noise, data=dat, weights=Trials, family="binomial")
+summary(mod_glm)
+X = model.matrix(mod_glm)[,-1] # -1 removes the column of 1s for the intercept
+
+mod_string = " model {
+	for (i in 1:length(y)) {
+		y[i] ~ dbin(phi[i], n[i])
+		logit(phi[i]) = b0 + b[1]*Age[i] + b[2]*OMElow[i] + b[3]*Loud[i] + b[4]*Noiseincoherent[i]
+	}
+
+	b0 ~ dnorm(0.0, 1.0/25.0)
+	for (j in 1:4) {
+		b[j] ~ dnorm(0.0, 1.0/25.0)
+	}
+} "
+
+data_jags = as.list(as.data.frame(X))
+data_jags$y = dat$Correct
+data_jags$n = dat$Trials
+params = c("b0", "b")
+mod = jags.model(textConnection(mod_string), data=data_jags, n.chains=3)
+update(mod, 1e3)
+mod_sim = coda.samples(model=mod, variable.names=params, n.iter=5000)
+mod_csim = as.mcmc(do.call(rbind, mod_sim))
+summary(mod_sim)
+raftery.diag(mod_csim)
+
+# Making predictions
+(pm_coef = colMeans(mod_csim))
+pm_Xb = pm_coef["b0"] + pm_coef[1]*60 + pm_coef[2]*0 + pm_coef[3]*35 + pm_coef[4]*0
+(phat = 1.0 / (1.0 + exp(-pm_Xb)))
+```
+
+
+Poisson regression with normal priors for the intercept and weights.
+
+```{r, fig.width=5, fig.height=5, warning=FALSE, message=FALSE}
+dat = read.csv(file="callers.csv", header=TRUE)
+mod_string = " model {
+    for (i in 1:length(calls)) {
+        calls[i] ~ dpois(days_active[i] * lam[i])
+		log(lam[i]) = b0 + b[1]*age[i] + b[2]*isgroup2[i]
+    }
+    b0 ~ dnorm(0.0, 1.0/1e6)
+    for (i in 1:2) {
+        b[i] ~ dnorm(0.0,100)
+    }
+} "
+data_jags = as.list(dat)
+params = c("b0", "b")
+mod = jags.model(textConnection(mod_string), data=data_jags, n.chains=3)
+update(mod, 1e3)
+mod_sim = coda.samples(model= mod, variable.names=params, n.iter=5e3)
+mod_csim = as.mcmc(do.call(rbind, mod_sim))
+summary(mod_sim)
+(dic = dic.samples(mod, n.iter=1e3))
+
+# Simulate predictions of the number of calls by a new 29 year old customer from Group 2 whose account is active for 30 days. 
+# What is the probability that this new customer calls at least three times during this period?
+(n_sim = nrow(mod_csim))
+calls_pred = rpois(n=n_sim, lambda=30.0*exp(mod_csim[,"b0"] + 29.0*mod_csim[,"b[1]"] + mod_csim[,"b[2]"]))
+hist(calls_pred)
+```
+
+
+Poisson regression with normal priors on the intercept and weights (including interaction term).
+
+```{r, fig.width=5, fig.height=5, warning=FALSE, message=FALSE}
+library("COUNT")
+data("badhealth")
+mod_string = " model {
+    for (i in 1:length(numvisit)) {
+        numvisit[i] ~ dpois(lam[i])
+        log(lam[i]) = int + b_badh*badh[i] + b_age*age[i] + b_intx*age[i]*badh[i]
+    }
+    int ~ dnorm(0.0, 1.0/1e6)
+    b_badh ~ dnorm(0.0, 1.0/1e4)
+    b_age ~ dnorm(0.0, 1.0/1e4)
+    b_intx ~ dnorm(0.0, 1.0/1e4)
+} "
+data_jags = as.list(badhealth)
+params = c("int", "b_badh", "b_age", "b_intx")
+mod = jags.model(textConnection(mod_string), data=data_jags, n.chains=3)
+update(mod, 1e3)
+mod_sim = coda.samples(model= mod, variable.names=params, n.iter=5e3)
+mod_csim = as.mcmc(do.call(rbind, mod_sim))
+(dic = dic.samples(mod, n.iter=1e3))
+
+## convergence diagnostics
+plot(mod_sim)
+
+gelman.diag(mod_sim)
+autocorr.diag(mod_sim)
+autocorr.plot(mod_sim)
+effectiveSize(mod_sim)
+
+# Model checking
+X = as.matrix(badhealth[,-1])
+X = cbind(X, with(badhealth, badh*age))
+head(X)
+(pmed_coef = apply(mod_csim, 2, median))
+llam_hat = pmed_coef["int"] + X %*% pmed_coef[c("b_badh", "b_age", "b_intx")]
+lam_hat = exp(llam_hat)
+hist(lam_hat)
+
+resid = badhealth$numvisit - lam_hat
+plot(resid) # the data were ordered
+
+plot(lam_hat, badhealth$numvisit)
+abline(0.0, 1.0)
+
+plot(lam_hat[which(badhealth$badh==0)], resid[which(badhealth$badh==0)], xlim=c(0, 8), ylab="residuals", xlab=expression(hat(lambda)), ylim=range(resid))
+points(lam_hat[which(badhealth$badh==1)], resid[which(badhealth$badh==1)], col="red")
+
+var(resid[which(badhealth$badh==0)])
+var(resid[which(badhealth$badh==1)])
+
+#Predictive posterior distribution
+x1 = c(0, 35, 0) # good health
+x2 = c(1, 35, 35) # bad health
+loglam1 = mod_csim[,"int"] + mod_csim[,c(2,1,3)] %*% x1
+loglam2 = mod_csim[,"int"] + mod_csim[,c(2,1,3)] %*% x2
+lam1 = exp(loglam1)
+lam2 = exp(loglam2)
+(n_sim = length(lam1))
+y1 = rpois(n=n_sim, lambda=lam1)
+y2 = rpois(n=n_sim, lambda=lam2)
+
+plot(table(factor(y1, levels=0:18))/n_sim, pch=2, ylab="posterior prob.", xlab="visits")
+points(table(y2+0.1)/n_sim, col="red")
+mean(y2 > y1)
+```
+
+
+Hierarchical model with normal likelihood and inverse gamma prior on the variance of the observations.
+Normal prior on the intra-group means.
+Normal prior on the inter-group mean and inverse gamma prior on the inter-group variance.
+  
+```{r, fig.width=5, fig.height=5, warning=FALSE, message=FALSE}
+dat = read.csv(file="pctgrowth.csv", header=TRUE)
+
+mod_string = " model {
+    for (i in 1:length(y)) {
+        y[i] ~ dnorm(theta[grp[i]], prec1)
+    }
+    for (j in 1:max(grp)) {
+        theta[j] ~ dnorm(mu, prec2)
+    }
+    
+    prec1 ~ dgamma(2.0/2.0, 2.0*1.0/2.0)
+    sig2 = 1.0 / prec1
+    sig = sqrt(sig2)
+    
+    mu ~ dnorm(0, 1.0/1.0e6)
+    prec2 ~ dgamma(1.0/2.0, 1.0*3.0/2.0)
+    tau2 = 1.0 / prec2
+    tau = sqrt(tau2)
+    
+} "
+
+set.seed(113)
+data_jags = as.list(dat)
+params = c("theta", "mu", "tau", "sig")
+mod = jags.model(textConnection(mod_string), data=data_jags, n.chains=3)
+update(mod, 1e3)
+mod_sim = coda.samples(model=mod, variable.names=params, n.iter=5e3)
+mod_csim = as.mcmc(do.call(rbind, mod_sim))
+summary(mod_sim)
+```
+
+
+Hierarchical model with Poisson likelihood.
+Gamma prior on the intra-group lambdas.
+Gamma prior on the inter-group mean of lambdas and exponential prior on the inter-group standard deviation of lambdas.
+
+```{r, fig.width=5, fig.height=5, warning=FALSE, message=FALSE}
+dat = read.table(file="cookies.dat", header=TRUE)
+print(dat)
+mod_string = " model {
+    for (i in 1:length(chips)) {
+      chips[i] ~ dpois(lam[location[i]])
+    }
+    for (j in 1:max(location)) {
+      lam[j] ~ dgamma(alpha, beta)
+    }
+    alpha = mu^2 / sig^2
+    beta = mu / sig^2
+    
+    mu ~ dgamma(2.0, 1.0/5.0)
+    sig ~ dexp(1.0)
+} "
+
+data_jags = as.list(dat)
+params = c("lam", "mu", "sig")
+mod = jags.model(textConnection(mod_string), data=data_jags, n.chains=3)
+update(mod, 1e3)
+mod_sim = coda.samples(model=mod, variable.names=params, n.iter=5e3)
+mod_csim = as.mcmc(do.call(rbind, mod_sim))
+summary(mod_sim)
+
+(pm_params = colMeans(mod_csim))
+yhat = rep(pm_params[1:5], each=30)
+## observation level residuals
+resid = dat$chips - yhat
+plot(resid)
+plot(jitter(yhat), resid)
+var(resid[yhat<7])
+var(resid[yhat>11])
+## location level residuals
+lam_resid = pm_params[1:5] - pm_params["mu"]
+plot(lam_resid)
+abline(h=0, lty=2)
+
+#Posterior predictive simulation
+(n_sim = nrow(mod_csim))
+lam_pred = rgamma(n=n_sim, shape=mod_csim[,"mu"]^2/mod_csim[,"sig"]^2, rate=mod_csim[,"mu"]/mod_csim[,"sig"]^2)
+hist(lam_pred)
+mean(lam_pred > 15)
+y_pred = rpois(n=n_sim, lambda=lam_pred)
+hist(y_pred)
+mean(y_pred > 15)
+hist(dat$chips)
+```
+
+
+Hierarchical linear regression with normal likelihood and inverse gamma prior on the observation variance.
+Normal prior on the inter-group weights.
+Normal prior on the intra-group intercepts.
+Normal prior on the inter-group mean of the intercepts and inverse gamma on the inter-group variance of the intercepts.
+
+```{r, fig.width=5, fig.height=5, warning=FALSE, message=FALSE}
+library("car")
+data("Leinhardt")
+dat = na.omit(Leinhardt)
+dat$logincome = log(dat$income)
+dat$loginfant = log(dat$infant)
+mod_string = " model {
+  for (i in 1:length(y)) {
+    y[i] ~ dnorm(mu[i], prec)
+    mu[i] = a[region[i]] + b[1]*log_income[i] + b[2]*is_oil[i]
+  }
+  
+  for (j in 1:max(region)) {
+    a[j] ~ dnorm(a0, prec_a)
+  }
+  
+  a0 ~ dnorm(0.0, 1.0/1.0e6)
+  prec_a ~ dgamma(1/2.0, 1*10.0/2.0)
+  tau = sqrt( 1.0 / prec_a )
+  
+  for (j in 1:2) {
+    b[j] ~ dnorm(0.0, 1.0/1.0e6)
+  }
+  
+  prec ~ dgamma(5/2.0, 5*10.0/2.0)
+  sig = sqrt( 1.0 / prec )
+} "
+data_jags = list(y=dat$loginfant, log_income=dat$logincome, is_oil=as.numeric(dat$oil=="yes"), region=as.numeric(dat$region))
+data_jags$is_oil
+table(data_jags$is_oil, data_jags$region)
+params = c("a0", "a", "b", "sig", "tau")
+mod = jags.model(textConnection(mod_string), data=data_jags, n.chains=3)
+update(mod, 1e3) # burn-in
+mod_sim = coda.samples(model=mod, variable.names=params, n.iter=5e3)
+mod_csim = as.mcmc(do.call(rbind, mod_sim)) # combine multiple chains
+summary(mod_sim)
+## convergence diagnostics
+#plot(mod_sim)
+#gelman.diag(mod_sim)
+#autocorr.diag(mod_sim)
+#autocorr.plot(mod_sim)
+#effectiveSize(mod_sim)
+```
+
+
+Hierarchical logistic regression with binomial likelihood.
+Normal prior on the weights.
+Normal prior on the inter-group weights.
+Normal prior on the intra-group intercepts.
+Normal prior on the inter-group mean of the intercepts and inverse gamma prior on the inter-group variance of the intercepts.
+
+```{r, fig.width=5, fig.height=5, warning=FALSE, message=FALSE}
+library("MASS")
+data("OME")
+dat = subset(OME, OME != "N/A")
+dat$OME = factor(dat$OME) # relabel OME
+dat$ID = as.numeric(factor(dat$ID)) # relabel ID so there are no gaps in numbers (they now go from 1 to 63)
+## Original reference model and covariate matrix
+mod_glm = glm(Correct/Trials ~ Age + OME + Loud + Noise, data=dat, weights=Trials, family="binomial")
+X = model.matrix(mod_glm)[,-1]
+
+mod_string = " model {
+    for(i in 1:length(y)) {
+        y[i] ~ dbin(phi[i], n[i])
+        logit(phi[i]) = a[ID[i]] + b[1]*Age[i] + b[2]*OMElow[i] + b[3]*Loud[i] + b[4]*Noiseincoherent[i]
+    }
+    for(j in 1:4) {
+        b[j] ~ dnorm(0.0, 1.0/16.0)
+    }
+    for (j in 1:max(ID)) {
+        a[j] ~ dnorm(mu, prec)
+    }
+    mu ~ dnorm(0, 100)
+    prec ~ dgamma(1.0/2.0, 1.0/2.0)
+    tau2 = 1.0/prec
+    tau = sqrt(tau2)
+} "
+
+data_jags = as.list(as.data.frame(X))
+data_jags$y = dat$Correct
+data_jags$n = dat$Trials
+data_jags$ID = dat$ID
+
+params = c("b", "a", "mu", "tau")
+mod = jags.model(textConnection(mod_string), data=data_jags, n.chains=3)
+update(mod, 1e3)
+mod_sim = coda.samples(model=mod, variable.names=params, n.iter=5000)
+mod_csim = as.mcmc(do.call(rbind, mod_sim))
+summary(mod_sim)
+## convergence diagnostics
+plot(mod_sim, ask=TRUE)
+gelman.diag(mod_sim)
+autocorr.diag(mod_sim)
+autocorr.plot(mod_sim)
+effectiveSize(mod_sim)
+raftery.diag(mod_csim)
+(dic = dic.samples(mod, n.iter=1e3))
+```
+
+
+Hierarchical mixture model with normal likelihood and inverse gamma prior on the observation variance.
+Categorical prior on the latent variable of the observations.
+Normal prior on the intra-group means.
+Dirichlet prior on the intra-group probability.
+
+```{r, fig.width=5, fig.height=5, warning=FALSE, message=FALSE}
+dat = read.csv("mixture.csv", header=FALSE)
+y = dat$V1
+mod_string = " model {
+    for (i in 1:length(y)) {
+      y[i] ~ dnorm(mu[z[i]], prec)
+      z[i] ~ dcat(omega)
+    }
+    
+  mu[1] ~ dnorm(-1.0, 1.0/100.0)
+  mu[2] ~ dnorm(1.0, 1.0/100.0) T(mu[1],) # ensures mu[1] < mu[2]
+
+  prec ~ dgamma(1.0/2.0, 1.0*1.0/2.0)
+  sig = sqrt(1.0/prec)
+  
+  omega ~ ddirich(c(1.0, 1.0))
+} "
+
+data_jags = list(y=y)
+params = c("mu", "sig", "omega", "z[1]", "z[31]", "z[49]", "z[6]") # Select some z's to monitor
+mod = jags.model(textConnection(mod_string), data=data_jags, n.chains=3)
+update(mod, 1e3)
+mod_sim = coda.samples(model=mod, variable.names=params, n.iter=5e3)
+mod_csim = as.mcmc(do.call(rbind, mod_sim))
+
+## convergence diagnostics
+plot(mod_sim, ask=TRUE)
+autocorr.diag(mod_sim)
+effectiveSize(mod_sim)
+
+summary(mod_sim)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
